@@ -37,6 +37,7 @@
   #playlist li.dragover { border-top: 2px solid var(--accent); }
   #playlist .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   #playlist .badge { font-size: 10px; color: var(--sub); }
+  #playlist .thumb { width: 64px; height: 36px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: #000; cursor: pointer; }
   #playlist .del { background: none; border: none; color: var(--sub); padding: 2px 6px; }
   #playlist .del:hover { color: var(--yt); }
   .hint { font-size: 11px; color: var(--sub); margin-top: 8px; line-height: 1.6; }
@@ -104,7 +105,7 @@
     </details>
     <script>
       document.getElementById('bookmarklet').href = 'javascript:' + encodeURIComponent(
-        `(()=>{const a=[...document.querySelectorAll('a[href*="/watch/"]')].map(x=>{const m=x.href.match(/watch\\/((?:sm|so|nm)?\\d+)/);return m&&'https://www.nicovideo.jp/watch/'+m[1]}).filter(Boolean);const u=[...new Set(a)];if(!u.length){alert('動画リンクが見つかりませんでした');return}navigator.clipboard.writeText(u.join('\\n')).then(()=>alert(u.length+'件の動画URLをコピーしました。CrossPlaylistに貼り付けてください')).catch(()=>prompt('コピーできない場合は手動でコピー:',u.join('\\n')))})()`);
+        `(()=>{const map=new Map();[...document.querySelectorAll('a[href*="/watch/"]')].forEach(x=>{const m=x.href.match(/watch\\/((?:sm|so|nm)?\\d+)/);if(!m)return;const id=m[1];const t=(x.textContent||'').trim().replace(/\\s+/g,' ');const prev=map.get(id);if(!prev||(!prev.t&&t))map.set(id,{t})});if(!map.size){alert('動画リンクが見つかりませんでした');return}const out=[...map.entries()].map(([id,v])=>'https://www.nicovideo.jp/watch/'+id+(v.t?'\\t'+v.t:'')).join('\\n');navigator.clipboard.writeText(out).then(()=>alert(map.size+'件の動画URL（タイトル付き）をコピーしました。CrossPlaylistに貼り付けてください')).catch(()=>prompt('コピーできない場合は手動でコピー:',out))})()`);
     </script>
   </div>
 </div>
@@ -182,16 +183,23 @@ function parseUrl(line) {
   return { ok: false, reason: '認識できないURL: ' + line.slice(0, 60) };
 }
 
-// タイトル取得（noembed.com経由・失敗してもIDのまま動く）
+// タイトル取得（YouTubeのみ。ニコニコはAPIがCORS遮断のため、
+// ブックマークレット由来のタイトル or 再生時のプレイヤー情報で補完）
 async function fetchTitle(item) {
-  const url = item.platform === 'yt'
-    ? `https://www.youtube.com/watch?v=${item.id}`
-    : `https://www.nicovideo.jp/watch/${item.id}`;
+  if (item.platform !== 'yt' || item.title !== item.id) return;
   try {
-    const res = await fetch('https://noembed.com/embed?url=' + encodeURIComponent(url));
+    const res = await fetch('https://noembed.com/embed?url=' + encodeURIComponent(`https://www.youtube.com/watch?v=${item.id}`));
     const json = await res.json();
     if (json.title) { item.title = json.title; save(); renderList(); }
   } catch (e) { /* IDのまま表示 */ }
+}
+
+// サムネイルURL（<img>表示はCORS対象外なので直接参照できる）
+function thumbUrl(item) {
+  if (item.thumb) return item.thumb; // 再生時にプレイヤーから取得した正式URL
+  if (item.platform === 'yt') return `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`;
+  const n = item.id.replace(/\D/g, '');
+  return `https://nicovideo.cdn.nimg.jp/thumbnails/${n}/${n}.M`;
 }
 
 // ---------- リスト描画 ----------
@@ -204,10 +212,16 @@ function renderList() {
     li.draggable = true;
     li.dataset.index = i;
     li.innerHTML = `
+      <img class="thumb" loading="lazy" onerror="this.style.display='none'">
       <span class="badge">${item.platform === 'yt' ? 'YT' : 'ニコ'}</span>
-      <span class="title" title="${item.title}">${item.title}</span>
+      <span class="title"></span>
       <button class="del" title="削除">✕</button>`;
-    li.querySelector('.title').onclick = () => play(i);
+    li.querySelector('.thumb').src = thumbUrl(item);
+    const titleEl = li.querySelector('.title');
+    titleEl.textContent = item.title;
+    titleEl.title = item.title;
+    li.querySelector('.thumb').onclick = () => play(i);
+    titleEl.onclick = () => play(i);
     li.querySelector('.del').onclick = (e) => {
       e.stopPropagation();
       playlist.splice(i, 1);
@@ -243,9 +257,17 @@ function addFromInput() {
   // 改行に依存せず、テキスト全体から動画URLを出現順に全て抽出
   const rx = /(?:youtube\.com\/watch\?[^\s]*?v=|youtu\.be\/|youtube\.com\/(?:shorts|live|embed|v)\/)([\w-]{11})|(?:nicovideo\.jp\/watch\/|nico\.ms\/)((?:sm|so|nm)?\d+)/g;
   const added = [];
-  for (const m of input.value.matchAll(rx)) {
-    added.push(m[1] ? { platform: 'yt', id: m[1], title: m[1] }
-                    : { platform: 'nico', id: m[2], title: m[2] });
+  for (const line of input.value.split('\n')) {
+    const matches = [...line.matchAll(rx)];
+    matches.forEach(m => added.push(
+      m[1] ? { platform: 'yt', id: m[1], title: m[1] }
+           : { platform: 'nico', id: m[2], title: m[2] }));
+    // 「URL<タブ>タイトル」形式（ブックマークレット出力）ならタイトルを反映
+    const tab = line.indexOf('\t');
+    if (matches.length === 1 && tab >= 0) {
+      const t = line.slice(tab + 1).trim();
+      if (t) added[added.length - 1].title = t;
+    }
   }
   // 動画URLを1つも含まない行は理由付きで報告
   const failed = input.value.split('\n').map(parseUrl).filter(r => r && !r.ok);
@@ -319,7 +341,21 @@ window.addEventListener('message', (e) => {
   if (e.origin !== 'https://embed.nicovideo.jp') return;
   const d = e.data;
   if (!d) return;
-  if (d.eventName === 'loadComplete') applyVolume(); // 読み込み完了時にマスターボリューム適用
+  if (d.eventName === 'loadComplete') {
+    applyVolume(); // 読み込み完了時にマスターボリューム適用
+    // タイトルがID表示のままなら、プレイヤーから届いた正式タイトルで補完
+    const cur = playlist[currentIndex];
+    const info = d.data && d.data.videoInfo;
+    if (cur && info && cur.platform === 'nico') {
+      let changed = false;
+      if (info.title && cur.title === cur.id) { cur.title = info.title; changed = true; }
+      if (info.thumbnailUrl && !cur.thumb) { cur.thumb = info.thumbnailUrl; changed = true; }
+      if (changed) {
+        save(); renderList();
+        document.getElementById('now-playing').textContent = `▶ [ニコニコ] ${cur.title}`;
+      }
+    }
+  }
   if (d.eventName === 'playerStatusChange' && d.data && d.data.playerStatus === 4) next();
   if (d.eventName === 'error') {
     const item = playlist[currentIndex];
