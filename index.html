@@ -240,16 +240,22 @@ function renderList() {
 function addFromInput() {
   const input = document.getElementById('url-input');
   const status = document.getElementById('add-status');
-  const results = input.value.split('\n').map(parseUrl).filter(Boolean);
-  const added = results.filter(r => r.ok).map(r => r.item);
-  const failed = results.filter(r => !r.ok);
+  // 改行に依存せず、テキスト全体から動画URLを出現順に全て抽出
+  const rx = /(?:youtube\.com\/watch\?[^\s]*?v=|youtu\.be\/|youtube\.com\/(?:shorts|live|embed|v)\/)([\w-]{11})|(?:nicovideo\.jp\/watch\/|nico\.ms\/)((?:sm|so|nm)?\d+)/g;
+  const added = [];
+  for (const m of input.value.matchAll(rx)) {
+    added.push(m[1] ? { platform: 'yt', id: m[1], title: m[1] }
+                    : { platform: 'nico', id: m[2], title: m[2] });
+  }
+  // 動画URLを1つも含まない行は理由付きで報告
+  const failed = input.value.split('\n').map(parseUrl).filter(r => r && !r.ok);
   added.forEach(item => { playlist.push(item); fetchTitle(item); });
   if (added.length) { save(); renderList(); }
   if (added.length && !failed.length) {
     input.value = '';
     status.style.color = 'var(--accent)';
     status.textContent = `${added.length}件追加しました`;
-  } else if (results.length === 0) {
+  } else if (!added.length && !failed.length) {
     status.style.color = 'var(--nico)';
     status.textContent = 'URLを入力してから「追加」を押してください';
   } else {
