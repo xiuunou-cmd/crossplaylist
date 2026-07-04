@@ -86,6 +86,21 @@
       プレイリストはこのブラウザに自動保存（localStorage）。<br>
       チャンネル一括取り込みは次段階（APIキー要）。
     </div>
+    <details class="hint" style="margin-top:8px;">
+      <summary style="cursor:pointer; color:var(--accent);">📥 ニコニコのマイリストを取り込む（ブックマークレット）</summary>
+      <ol style="padding-left:18px; margin:8px 0;">
+        <li>下のリンクをブックマークバーにドラッグして登録<br>
+          <a id="bookmarklet" style="color:var(--nico); font-weight:bold;">📥 動画URL収集</a></li>
+        <li>ニコニコで取り込みたいマイリスト／シリーズ等のページを開く（<b>下までスクロールして全件表示させる</b>）</li>
+        <li>登録したブックマークをクリック → 動画URLが全件コピーされる</li>
+        <li>ここに戻って貼り付け →「＋追加」</li>
+      </ol>
+      マイリストに限らず、動画リンクが並んでいるページ（検索結果・ランキング等）ならどこでも使える。
+    </details>
+    <script>
+      document.getElementById('bookmarklet').href = 'javascript:' + encodeURIComponent(
+        `(()=>{const a=[...document.querySelectorAll('a[href*="/watch/"]')].map(x=>{const m=x.href.match(/watch\\/((?:sm|so|nm)?\\d+)/);return m&&'https://www.nicovideo.jp/watch/'+m[1]}).filter(Boolean);const u=[...new Set(a)];if(!u.length){alert('動画リンクが見つかりませんでした');return}navigator.clipboard.writeText(u.join('\\n')).then(()=>alert(u.length+'件の動画URLをコピーしました。CrossPlaylistに貼り付けてください')).catch(()=>prompt('コピーできない場合は手動でコピー:',u.join('\\n')))})()`);
+    </script>
   </div>
 </div>
 
