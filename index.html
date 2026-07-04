@@ -51,8 +51,13 @@
   ⚠ file:// で直接開かれています。この状態では YouTube / ニコニコの埋め込み再生が拒否されます（YouTubeエラー153等）。
   同じフォルダの <b>start.bat</b> をダブルクリックして起動してください。
 </div>
+<div id="localhost-warning" style="display:none; background:#4a3c1e; color:#ffe9b8; padding:8px 16px; font-size:13px;">
+  ℹ ローカル起動（開発用）です。ニコニコ動画はローカルからの再生を拒否するため、視聴には
+  <a href="https://xiuunou-cmd.github.io/crossplaylist/" style="color:var(--accent)">公開版</a> を使ってください。
+</div>
 <script>
-  if (location.protocol === 'file:') document.currentScript.previousElementSibling.style.display = 'block';
+  if (location.protocol === 'file:') document.getElementById('file-warning').style.display = 'block';
+  else if (/^(localhost|127\.)/.test(location.hostname)) document.getElementById('localhost-warning').style.display = 'block';
 </script>
 
 <div class="wrap">
