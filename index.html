@@ -63,10 +63,20 @@
       <button id="prev-btn">⏮ 前へ</button>
       <button id="next-btn">次へ ⏭</button>
       <button id="shuffle-btn">🔀 シャッフル</button>
+      <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--sub); margin-left:8px;">
+        🔊 <input type="range" id="volume-slider" min="0" max="100" style="width:120px;">
+        <span id="volume-label"></span>
+      </label>
     </div>
   </div>
 
   <div class="list-col">
+    <div style="display:flex; gap:4px; margin-bottom:8px;">
+      <select id="list-select" style="flex:1; background:var(--panel2); color:var(--text); border:1px solid #333a46; border-radius:6px; padding:5px;"></select>
+      <button id="list-new" title="新規プレイリスト">＋</button>
+      <button id="list-rename" title="名前を変更">✎</button>
+      <button id="list-del" title="このプレイリストを削除">🗑</button>
+    </div>
     <textarea id="url-input" placeholder="動画URLを貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...&#10;https://www.nicovideo.jp/watch/sm..."></textarea>
     <button id="add-btn">＋ 追加</button>
     <div id="add-status" style="font-size:12px; margin-top:6px; min-height:1.3em;"></div>
@@ -81,12 +91,58 @@
 
 <script>
 // ---------- データ ----------
-const STORAGE_KEY = 'crossplaylist_v1';
-let playlist = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); // {platform:'yt'|'nico', id, title}
+// v2: 複数プレイリスト {lists:[{name, items:[{platform,id,title}]}], active, volume}
+const STORAGE_KEY = 'crossplaylist_v2';
+let state = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+if (!state) {
+  const v1 = JSON.parse(localStorage.getItem('crossplaylist_v1') || '[]'); // 旧データ移行
+  state = { lists: [{ name: 'プレイリスト1', items: v1 }], active: 0, volume: 100 };
+}
+if (typeof state.volume !== 'number') state.volume = 100;
+let playlist = state.lists[state.active].items;
 let currentIndex = -1;
 let shuffle = false;
 
-function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(playlist)); }
+function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+// ---------- プリセット（プレイリスト切替） ----------
+function renderListSelect() {
+  const sel = document.getElementById('list-select');
+  sel.innerHTML = '';
+  state.lists.forEach((l, i) => {
+    const op = document.createElement('option');
+    op.value = i; op.textContent = `${l.name}（${l.items.length}）`;
+    sel.appendChild(op);
+  });
+  sel.value = state.active;
+}
+function switchList(i) {
+  state.active = i;
+  playlist = state.lists[i].items;
+  currentIndex = -1;
+  save(); renderListSelect(); renderList();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('list-select').onchange = e => switchList(+e.target.value);
+  document.getElementById('list-new').onclick = () => {
+    const name = prompt('新しいプレイリスト名', `プレイリスト${state.lists.length + 1}`);
+    if (!name) return;
+    state.lists.push({ name, items: [] });
+    switchList(state.lists.length - 1);
+  };
+  document.getElementById('list-rename').onclick = () => {
+    const name = prompt('プレイリスト名を変更', state.lists[state.active].name);
+    if (!name) return;
+    state.lists[state.active].name = name;
+    save(); renderListSelect();
+  };
+  document.getElementById('list-del').onclick = () => {
+    if (state.lists.length <= 1) { alert('最後のプレイリストは削除できません'); return; }
+    if (!confirm(`「${state.lists[state.active].name}」を削除しますか？`)) return;
+    state.lists.splice(state.active, 1);
+    switchList(Math.max(0, state.active - 1));
+  };
+});
 
 // ---------- URL解析 ----------
 // 戻り値: {ok:true, item} / {ok:false, reason} / null(空行)
@@ -218,6 +274,7 @@ function play(i) {
       videoId: item.id,
       playerVars: { autoplay: 1, rel: 0 },
       events: {
+        onReady: (e) => e.target.setVolume(state.volume),
         onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) next(); }
       }
     });
@@ -236,6 +293,7 @@ window.addEventListener('message', (e) => {
   if (e.origin !== 'https://embed.nicovideo.jp') return;
   const d = e.data;
   if (!d) return;
+  if (d.eventName === 'loadComplete') applyVolume(); // 読み込み完了時にマスターボリューム適用
   if (d.eventName === 'playerStatusChange' && d.data && d.data.playerStatus === 4) next();
   if (d.eventName === 'error') {
     const item = playlist[currentIndex];
@@ -270,6 +328,22 @@ document.getElementById('shuffle-btn').onclick = function () {
   this.classList.toggle('active', shuffle);
 };
 
+// ---------- マスターボリューム ----------
+function applyVolume() {
+  const v = state.volume;
+  if (ytPlayer && ytPlayer.setVolume) { try { ytPlayer.setVolume(v); } catch (e) {} }
+  const nicoFrame = document.querySelector('#player-box iframe[src*="embed.nicovideo.jp"]');
+  if (nicoFrame) nicoFrame.contentWindow.postMessage(
+    { sourceConnectorType: 1, playerId: '1', eventName: 'volumeChange', data: { volume: v / 100 } },
+    'https://embed.nicovideo.jp');
+  document.getElementById('volume-label').textContent = v;
+}
+const volSlider = document.getElementById('volume-slider');
+volSlider.value = state.volume;
+volSlider.oninput = () => { state.volume = +volSlider.value; save(); applyVolume(); };
+applyVolume();
+
+renderListSelect();
 renderList();
 </script>
 </body>
