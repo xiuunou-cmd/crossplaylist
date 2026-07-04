@@ -17,6 +17,7 @@
   .player-col { flex: 1 1 65%; min-width: 0; }
   #player-box { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; }
   #player-box iframe, #player-box > div { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  #yt-holder iframe { width: 100%; height: 100%; }
   #now-playing { margin-top: 8px; font-size: 14px; color: var(--sub); min-height: 1.4em; }
   .controls { margin-top: 8px; display: flex; gap: 8px; }
   button { background: var(--panel2); color: var(--text); border: 1px solid #333a46; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
@@ -63,7 +64,7 @@
 
 <div class="wrap">
   <div class="player-col">
-    <div id="player-box"><div id="player-slot"></div></div>
+    <div id="player-box"></div>
     <div id="now-playing">プレイリストから動画をクリックで再生開始</div>
     <div class="controls">
       <button id="prev-btn">⏮ 前へ</button>
@@ -293,7 +294,6 @@ document.getElementById('url-input').addEventListener('keydown', e => {
 });
 
 // ---------- プレイヤー ----------
-const slot = () => document.getElementById('player-slot');
 let ytPlayer = null;
 let ytReady = false;
 
@@ -303,37 +303,63 @@ tag.src = 'https://www.youtube.com/iframe_api';
 document.head.appendChild(tag);
 window.onYouTubeIframeAPIReady = () => { ytReady = true; };
 
-function clearPlayer() {
-  if (ytPlayer) { try { ytPlayer.destroy(); } catch (e) {} ytPlayer = null; }
-  const box = document.getElementById('player-box');
-  box.innerHTML = '<div id="player-slot"></div>';
+// YouTubeプレイヤーは使い回す（作り直すとブラウザの自動再生ブロックに掛かるため、
+// loadVideoByIdで動画だけ差し替える）
+function ensureYtHolder() {
+  let holder = document.getElementById('yt-holder');
+  if (!holder) {
+    holder = document.createElement('div');
+    holder.id = 'yt-holder';
+    holder.innerHTML = '<div id="yt-slot"></div>';
+    document.getElementById('player-box').appendChild(holder);
+  }
+  return holder;
+}
+function removeNicoFrame() {
+  const f = document.querySelector('#player-box iframe[src*="embed.nicovideo.jp"]');
+  if (f) f.remove();
 }
 
 function play(i) {
   if (i < 0 || i >= playlist.length) return;
   currentIndex = i;
   const item = playlist[i];
-  clearPlayer();
   document.getElementById('now-playing').textContent =
     `▶ [${item.platform === 'yt' ? 'YouTube' : 'ニコニコ'}] ${item.title}`;
 
   if (item.platform === 'yt') {
-    ytPlayer = new YT.Player('player-slot', {
-      videoId: item.id,
-      playerVars: { autoplay: 1, rel: 0 },
-      events: {
-        onReady: (e) => e.target.setVolume(state.volume),
-        onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) next(); }
-      }
-    });
+    removeNicoFrame();
+    const holder = ensureYtHolder();
+    holder.style.display = '';
+    if (ytPlayer && ytPlayer.loadVideoById) {
+      ytPlayer.loadVideoById(item.id); // 既存プレイヤーで再生継続 → 自動再生が通る
+    } else {
+      ytPlayer = new YT.Player('yt-slot', {
+        videoId: item.id,
+        playerVars: { autoplay: 1, rel: 0 },
+        events: {
+          onReady: (e) => e.target.setVolume(state.volume),
+          onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) next(); }
+        }
+      });
+    }
   } else {
+    if (ytPlayer && ytPlayer.stopVideo) { try { ytPlayer.stopVideo(); } catch (e) {} }
+    const holder = document.getElementById('yt-holder');
+    if (holder) holder.style.display = 'none';
+    removeNicoFrame();
     const iframe = document.createElement('iframe');
     iframe.src = `https://embed.nicovideo.jp/watch/${item.id}?jsapi=1&playerId=1&persistence=1&from=0&autoplay=1`;
     iframe.allow = 'autoplay; fullscreen';
     iframe.allowFullscreen = true;
-    slot().replaceWith(iframe);
+    document.getElementById('player-box').appendChild(iframe);
   }
   renderList();
+}
+function sendNicoPlay() {
+  const f = document.querySelector('#player-box iframe[src*="embed.nicovideo.jp"]');
+  if (f) f.contentWindow.postMessage(
+    { sourceConnectorType: 1, playerId: '1', eventName: 'play' }, 'https://embed.nicovideo.jp');
 }
 
 // ニコニコ埋め込みプレイヤーの終了検知（postMessage / playerStatus 4 = END）
@@ -342,6 +368,7 @@ window.addEventListener('message', (e) => {
   const d = e.data;
   if (!d) return;
   if (d.eventName === 'loadComplete') {
+    sendNicoPlay(); // autoplayが効かない環境向けに明示的な再生命令
     applyVolume(); // 読み込み完了時にマスターボリューム適用
     // タイトルがID表示のままなら、プレイヤーから届いた正式タイトルで補完
     const cur = playlist[currentIndex];
