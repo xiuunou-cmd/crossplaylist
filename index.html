@@ -84,25 +84,40 @@
       <button id="list-rename" title="名前を変更">✎</button>
       <button id="list-del" title="このプレイリストを削除">🗑</button>
     </div>
-    <textarea id="url-input" placeholder="動画URLを貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...&#10;https://www.nicovideo.jp/watch/sm..."></textarea>
+    <textarea id="url-input" placeholder="動画URL / YouTubeチャンネルURL / 再生リストURL を貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/@channel&#10;https://www.nicovideo.jp/watch/sm..."></textarea>
     <button id="add-btn">＋ 追加</button>
     <div id="add-status" style="font-size:12px; margin-top:6px; min-height:1.3em;"></div>
     <ul id="playlist"></ul>
     <div class="hint">
       クリックで再生 / ドラッグで並び替え / ✕で削除。<br>
       プレイリストはこのブラウザに自動保存（localStorage）。<br>
-      チャンネル一括取り込みは次段階（APIキー要）。
+      YouTubeはチャンネルURL・再生リストURLをそのまま貼れば一括取り込み（要APIキー・下記）。
     </div>
     <details class="hint" style="margin-top:8px;">
-      <summary style="cursor:pointer; color:var(--accent);">📥 ニコニコのマイリストを取り込む（ブックマークレット）</summary>
+      <summary style="cursor:pointer; color:var(--accent);">⚙ YouTubeチャンネル/再生リスト取り込み（APIキー設定）</summary>
+      <p style="margin:8px 0;">初回のみ、無料の YouTube Data API キーが必要です（サーバー不要・キーはこのブラウザ内だけに保存されます）。</p>
+      <ol style="padding-left:18px; margin:8px 0;">
+        <li><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" style="color:var(--accent)">Google Cloud Console</a> でプロジェクトを作成し「YouTube Data API v3」を有効化</li>
+        <li><a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--accent)">認証情報</a> →「APIキーを作成」でキーを取得</li>
+        <li>下に貼り付けて保存 → チャンネル/再生リストURLを上の欄に貼るだけで取り込み</li>
+      </ol>
+      <div style="display:flex; gap:4px;">
+        <input id="yt-key" type="password" placeholder="YouTube Data API キー" style="flex:1; background:var(--panel2); color:var(--text); border:1px solid #333a46; border-radius:6px; padding:6px;">
+        <button id="yt-key-save">保存</button>
+      </div>
+      <div id="yt-key-status" style="margin-top:4px;"></div>
+    </details>
+    <details class="hint" style="margin-top:8px;">
+      <summary style="cursor:pointer; color:var(--accent);">📥 ニコニコのマイリスト/チャンネルを取り込む（ブックマークレット）</summary>
       <ol style="padding-left:18px; margin:8px 0;">
         <li>下のリンクをブックマークバーにドラッグして登録<br>
           <a id="bookmarklet" style="color:var(--nico); font-weight:bold;">📥 動画URL収集</a></li>
-        <li>ニコニコで取り込みたいマイリスト／シリーズ等のページを開く（<b>下までスクロールして全件表示させる</b>）</li>
+        <li>ニコニコで取り込みたいページを開く（マイリスト／シリーズ／ユーザー投稿一覧など。<b>下までスクロールして全件表示させる</b>）</li>
         <li>登録したブックマークをクリック → 動画URLが全件コピーされる</li>
         <li>ここに戻って貼り付け →「＋追加」</li>
       </ol>
-      マイリストに限らず、動画リンクが並んでいるページ（検索結果・ランキング等）ならどこでも使える。
+      動画リンクが並ぶページ（マイリスト・シリーズ・投稿者ページ・検索結果・ランキング等）ならどこでも使える。<br>
+      ※ニコニコはAPIが外部アクセスを遮断しているため、URL直貼りの自動取り込みには対応できずこの方式になっています。
     </details>
     <script>
       document.getElementById('bookmarklet').href = 'javascript:' + encodeURIComponent(
@@ -164,25 +179,17 @@ document.addEventListener('DOMContentLoaded', () => {
     state.lists.splice(state.active, 1);
     switchList(Math.max(0, state.active - 1));
   };
+  // YouTube APIキー
+  const keyInput = document.getElementById('yt-key');
+  const keyStatus = document.getElementById('yt-key-status');
+  if (state.ytKey) { keyInput.value = state.ytKey; keyStatus.textContent = '✓ 設定済み'; keyStatus.style.color = 'var(--accent)'; }
+  document.getElementById('yt-key-save').onclick = () => {
+    state.ytKey = keyInput.value.trim();
+    save();
+    keyStatus.style.color = 'var(--accent)';
+    keyStatus.textContent = state.ytKey ? '✓ 保存しました' : 'キーを消去しました';
+  };
 });
-
-// ---------- URL解析 ----------
-// 戻り値: {ok:true, item} / {ok:false, reason} / null(空行)
-function parseUrl(line) {
-  line = line.trim().replace(/^[<\[(]+|[>\])]+$/g, ''); // マークダウン等の囲みを除去
-  if (!line) return null;
-  let m;
-  if ((m = line.match(/(?:youtube\.com\/watch\?[^\s]*v=|youtu\.be\/|youtube\.com\/(?:shorts|live|embed|v)\/)([\w-]{11})/)))
-    return { ok: true, item: { platform: 'yt', id: m[1], title: m[1] } };
-  if ((m = line.match(/(?:nicovideo\.jp\/watch\/|nico\.ms\/)((?:sm|so|nm)?\d+)/)))
-    return { ok: true, item: { platform: 'nico', id: m[1], title: m[1] } };
-  // 未対応だが意図が分かるURLは理由を返す
-  if (/youtube\.com\/(?:@|channel\/|c\/|user\/|playlist)/.test(line))
-    return { ok: false, reason: 'チャンネル/再生リストURLは未対応（動画URLを貼ってください）' };
-  if (/nicovideo\.jp\/(?:user\/|mylist|series)/.test(line))
-    return { ok: false, reason: 'ユーザー/マイリストURLは未対応（動画URLを貼ってください）' };
-  return { ok: false, reason: '認識できないURL: ' + line.slice(0, 60) };
-}
 
 // タイトル取得（YouTubeのみ。ニコニコはAPIがCORS遮断のため、
 // ブックマークレット由来のタイトル or 再生時のプレイヤー情報で補完）
@@ -201,6 +208,107 @@ function thumbUrl(item) {
   if (item.platform === 'yt') return `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`;
   const n = item.id.replace(/\D/g, '');
   return `https://nicovideo.cdn.nimg.jp/thumbnails/${n}/${n}.M`;
+}
+
+// 現在のリストに重複を避けて追加。追加できたitem配列を返す
+function addItems(items) {
+  const seen = new Set(playlist.map(i => i.platform + i.id));
+  const addedItems = [];
+  for (const it of items) {
+    const k = it.platform + it.id;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    playlist.push(it);
+    addedItems.push(it);
+  }
+  if (addedItems.length) { save(); renderListSelect(); renderList(); }
+  return addedItems;
+}
+
+// ---------- YouTube Data API 取り込み ----------
+function ytKey() { return state.ytKey || ''; }
+
+// チャンネル/再生リストURLの判定（単一動画URLは対象外）
+function classifyYtSpecial(line) {
+  const t = line.trim();
+  if (!t || /[?&]v=/.test(t)) return null;         // v= を含む＝単一動画優先
+  if (/youtube\.com\/playlist\?/.test(t) || /[?&]list=[\w-]+/.test(t)) return 'playlist';
+  if (/youtube\.com\/(@[\w.\-]+|channel\/UC[\w-]+|user\/[\w-]+|c\/[^/?\s]+)/.test(t)) return 'channel';
+  return null;
+}
+
+async function ytApi(path) {
+  if (!ytKey()) throw new Error('APIキー未設定');
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(`https://www.googleapis.com/youtube/v3/${path}${sep}key=${encodeURIComponent(ytKey())}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error ? j.error.message : ('HTTP ' + r.status));
+  return j;
+}
+
+// チャンネルURL → uploads再生リストID + チャンネル名
+async function resolveUploads(channelUrl) {
+  let param, m;
+  if ((m = channelUrl.match(/youtube\.com\/(@[\w.\-]+)/))) param = 'forHandle=' + encodeURIComponent(m[1]);
+  else if ((m = channelUrl.match(/youtube\.com\/channel\/(UC[\w-]+)/))) param = 'id=' + m[1];
+  else if ((m = channelUrl.match(/youtube\.com\/user\/([\w-]+)/))) param = 'forUsername=' + m[1];
+  else if ((m = channelUrl.match(/youtube\.com\/c\/([^/?\s]+)/))) {
+    const s = await ytApi('search?part=snippet&type=channel&maxResults=1&q=' + encodeURIComponent(decodeURIComponent(m[1])));
+    if (!s.items || !s.items.length) throw new Error('チャンネルが見つかりません');
+    param = 'id=' + s.items[0].snippet.channelId;
+  } else throw new Error('チャンネルURLを認識できません');
+  const c = await ytApi('channels?part=snippet,contentDetails&' + param);
+  if (!c.items || !c.items.length) throw new Error('チャンネルが見つかりません');
+  return { uploads: c.items[0].contentDetails.relatedPlaylists.uploads, title: c.items[0].snippet.title };
+}
+
+// 再生リストの全動画を取得（最大MAX件でページング打ち切り）
+async function fetchPlaylistItems(playlistId, onProgress) {
+  const MAX = 500;
+  const items = [];
+  let pageToken = '';
+  do {
+    const j = await ytApi(`playlistItems?part=snippet,contentDetails&maxResults=50&playlistId=${playlistId}` + (pageToken ? '&pageToken=' + pageToken : ''));
+    for (const it of (j.items || [])) {
+      const vid = it.contentDetails && it.contentDetails.videoId;
+      const title = it.snippet && it.snippet.title;
+      if (!vid || title === 'Deleted video' || title === 'Private video') continue; // 削除・非公開はスキップ
+      const th = it.snippet.thumbnails && (it.snippet.thumbnails.medium || it.snippet.thumbnails.default);
+      items.push({ platform: 'yt', id: vid, title: title || vid, thumb: th ? th.url : undefined });
+    }
+    if (onProgress) onProgress(items.length);
+    pageToken = j.nextPageToken || '';
+  } while (pageToken && items.length < MAX);
+  return { items, truncated: !!pageToken };
+}
+
+async function importYtSpecial(url) {
+  const status = document.getElementById('add-status');
+  if (!ytKey()) {
+    status.style.color = 'var(--nico)';
+    status.textContent = 'YouTube APIキーが未設定です（下の「⚙ チャンネル/再生リスト取り込み」から登録）';
+    return;
+  }
+  status.style.color = 'var(--accent)';
+  try {
+    let playlistId, label;
+    const m = url.match(/[?&]list=([\w-]+)/);
+    if (m) { playlistId = m[1]; label = '再生リスト'; status.textContent = '再生リストを取得中...'; }
+    else {
+      status.textContent = 'チャンネル情報を取得中...';
+      const r = await resolveUploads(url);
+      playlistId = r.uploads; label = r.title;
+    }
+    const { items, truncated } = await fetchPlaylistItems(playlistId, n => { status.textContent = `「${label}」取得中... ${n}件`; });
+    const addedItems = addItems(items);
+    status.style.color = 'var(--accent)';
+    status.textContent = `「${label}」から${addedItems.length}件追加`
+      + (addedItems.length < items.length ? `（重複${items.length - addedItems.length}件スキップ）` : '')
+      + (truncated ? `／上限${500}件で打ち切り` : '');
+  } catch (e) {
+    status.style.color = 'var(--nico)';
+    status.textContent = '取り込み失敗: ' + e.message;
+  }
 }
 
 // ---------- リスト描画 ----------
@@ -252,39 +360,49 @@ function renderList() {
 }
 
 // ---------- 追加 ----------
-function addFromInput() {
+async function addFromInput() {
   const input = document.getElementById('url-input');
   const status = document.getElementById('add-status');
-  // 改行に依存せず、テキスト全体から動画URLを出現順に全て抽出
   const rx = /(?:youtube\.com\/watch\?[^\s]*?v=|youtu\.be\/|youtube\.com\/(?:shorts|live|embed|v)\/)([\w-]{11})|(?:nicovideo\.jp\/watch\/|nico\.ms\/)((?:sm|so|nm)?\d+)/g;
-  const added = [];
-  for (const line of input.value.split('\n')) {
+  const collected = [];
+  const specials = [];
+  let unrecognized = 0;
+  for (const rawLine of input.value.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (classifyYtSpecial(line)) { specials.push(line); continue; }   // チャンネル/再生リスト → API取り込み
     const matches = [...line.matchAll(rx)];
-    matches.forEach(m => added.push(
+    if (!matches.length) { unrecognized++; continue; }
+    matches.forEach(m => collected.push(
       m[1] ? { platform: 'yt', id: m[1], title: m[1] }
            : { platform: 'nico', id: m[2], title: m[2] }));
     // 「URL<タブ>タイトル」形式（ブックマークレット出力）ならタイトルを反映
-    const tab = line.indexOf('\t');
+    const tab = rawLine.indexOf('\t');
     if (matches.length === 1 && tab >= 0) {
-      const t = line.slice(tab + 1).trim();
-      if (t) added[added.length - 1].title = t;
+      const t = rawLine.slice(tab + 1).trim();
+      if (t) collected[collected.length - 1].title = t;
     }
   }
-  // 動画URLを1つも含まない行は理由付きで報告
-  const failed = input.value.split('\n').map(parseUrl).filter(r => r && !r.ok);
-  added.forEach(item => { playlist.push(item); fetchTitle(item); });
-  if (added.length) { save(); renderList(); }
-  if (added.length && !failed.length) {
+
+  // 個別動画を追加（タイトル未取得のYouTubeは補完）
+  const addedItems = addItems(collected);
+  addedItems.forEach(it => { if (it.platform === 'yt' && it.title === it.id) fetchTitle(it); });
+
+  // チャンネル/再生リストを順に取り込み（statusは各自で表示）
+  for (const url of specials) await importYtSpecial(url);
+
+  if (specials.length) { input.value = ''; return; }
+  if (collected.length) {
     input.value = '';
     status.style.color = 'var(--accent)';
-    status.textContent = `${added.length}件追加しました`;
-  } else if (!added.length && !failed.length) {
+    status.textContent = `${addedItems.length}件追加`
+      + (addedItems.length < collected.length ? `（重複${collected.length - addedItems.length}件スキップ）` : '');
+  } else if (unrecognized) {
     status.style.color = 'var(--nico)';
-    status.textContent = 'URLを入力してから「追加」を押してください';
+    status.textContent = `認識できるURLがありませんでした（${unrecognized}行）`;
   } else {
     status.style.color = 'var(--nico)';
-    status.textContent = (added.length ? `${added.length}件追加 / ` : '') + failed[0].reason
-      + (failed.length > 1 ? ` ほか${failed.length - 1}行` : '');
+    status.textContent = 'URLを入力してから「追加」を押してください';
   }
 }
 document.getElementById('add-btn').onclick = addFromInput;
