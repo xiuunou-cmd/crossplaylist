@@ -30,8 +30,14 @@
   #playlist li {
     display: flex; align-items: center; gap: 8px; padding: 7px 8px; margin-bottom: 4px;
     background: var(--panel2); border-radius: 6px; cursor: grab; font-size: 13px;
-    border-left: 3px solid transparent;
+    border-left: 3px solid transparent; user-select: none;
   }
+  #playlist li.selected { outline: 1px dashed var(--nico); background: #33301f; }
+  #playlist .tags { font-size: 10px; color: var(--accent); flex-shrink: 0; max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { padding: 2px 10px; border-radius: 12px; font-size: 11px; opacity: .4; }
+  .chip.on { opacity: 1; border-color: currentColor; }
+  .chip.p-yt { color: #ff8a8a; } .chip.p-nico { color: var(--nico); } .chip.p-sc { color: #ff9b66; } .chip.tag { color: var(--accent); }
+  #sel-bar button, #sel-bar select { padding: 3px 8px; font-size: 12px; }
   #playlist li.yt { border-left-color: var(--yt); }
   #playlist li.nico { border-left-color: var(--nico); }
   #playlist li.sc { border-left-color: var(--sc); }
@@ -75,6 +81,11 @@
         🔊 <input type="range" id="volume-slider" min="0" max="100" style="width:120px;">
         <span id="volume-label"></span>
       </label>
+      <label id="gain-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--sub); margin-left:8px;"
+             title="この曲だけ音量を補正（マスター音量に乗算して記憶）。100%超を効かせたいときはマスターを下げて余裕を作る">
+        🎚 <input type="range" id="gain-slider" min="0" max="200" step="5" style="width:100px;">
+        <span id="gain-label"></span>
+      </label>
     </div>
   </div>
 
@@ -88,9 +99,19 @@
     <textarea id="url-input" placeholder="動画/曲URL・チャンネル/マイリスト等のURL を貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...（再生リスト/チャンネルURLもOK）&#10;https://www.nicovideo.jp/watch/sm...（マイリスト/シリーズ/ユーザーURLもOK）&#10;https://soundcloud.com/artist/track"></textarea>
     <button id="add-btn">＋ 追加</button>
     <div id="add-status" style="font-size:12px; margin-top:6px; min-height:1.3em;"></div>
+    <div id="filter-bar" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:8px;"></div>
+    <div id="sel-bar" style="display:none; gap:4px; align-items:center; margin-top:6px; font-size:12px; flex-wrap:wrap;">
+      <span id="sel-count" style="color:var(--nico);"></span>
+      <button id="sel-tag" title="選択した曲にタグを設定">🏷 タグ</button>
+      <select id="sel-move" title="選択した曲を別プレイリストへ移動"
+              style="background:var(--panel2); color:var(--text); border:1px solid #333a46; border-radius:6px;"></select>
+      <button id="sel-del" title="選択した曲を削除">🗑 削除</button>
+      <button id="sel-clear" title="選択解除">✕</button>
+    </div>
     <ul id="playlist"></ul>
     <div class="hint">
-      クリックで再生 / ドラッグで並び替え / ✕で削除。<br>
+      クリックで再生 / Ctrl・Shift＋クリックで複数選択（🏷タグ・📂移動・🗑一括削除） / ドラッグで並び替え / ✕・Deleteキーで削除。<br>
+      再生中は🎚で曲ごとの音量補正（記憶される）。チップでプラットフォーム/タグ絞り込み＝その範囲で連続再生。<br>
       プレイリストはこのブラウザに自動保存（localStorage）。<br>
       一括取り込み: YouTubeはチャンネル/再生リストURL（要APIキー・下記）、<br>
       ニコニコはマイリスト/シリーズ/ユーザーページURLをそのまま貼るだけ（設定不要）。
@@ -138,9 +159,12 @@ if (!state) {
   state = { lists: [{ name: 'プレイリスト1', items: v1 }], active: 0, volume: 100 };
 }
 if (typeof state.volume !== 'number') state.volume = 100;
+if (!state.filter) state.filter = { yt: true, nico: true, sc: true, tags: [] };
 let playlist = state.lists[state.active].items;
 let currentIndex = -1;
 let shuffle = false;
+let selected = new Set();   // 選択中のitemオブジェクト（並び替え・削除に追従するよう参照で保持）
+let anchorIndex = -1;       // Shift範囲選択の起点
 
 function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
@@ -159,6 +183,7 @@ function switchList(i) {
   state.active = i;
   playlist = state.lists[i].items;
   currentIndex = -1;
+  selected.clear(); anchorIndex = -1;
   save(); renderListSelect(); renderList();
 }
 document.addEventListener('DOMContentLoaded', () => {
@@ -380,13 +405,136 @@ async function importYtSpecial(url) {
   }
 }
 
+// ---------- フィルター ----------
+function itemVisible(it) {
+  if (!state.filter[it.platform]) return false;
+  const tf = state.filter.tags;
+  if (tf.length && !(it.tags || []).some(t => tf.includes(t))) return false;
+  return true;
+}
+// フィルターを通過した曲の実インデックス一覧（再生順・選択範囲の基準）
+function visibleIndices() {
+  const v = [];
+  playlist.forEach((it, i) => { if (itemVisible(it)) v.push(i); });
+  return v;
+}
+function allTags() {
+  const s = new Set();
+  playlist.forEach(it => (it.tags || []).forEach(t => s.add(t)));
+  return [...s];
+}
+function renderFilterBar() {
+  const bar = document.getElementById('filter-bar');
+  bar.innerHTML = '';
+  const tags = allTags();
+  state.filter.tags = state.filter.tags.filter(t => tags.includes(t)); // 消えたタグを掃除
+  [['yt', 'YT'], ['nico', 'ニコ'], ['sc', 'SC']].forEach(([p, label]) => {
+    const n = playlist.filter(it => it.platform === p).length;
+    if (!n && state.filter[p]) return; // 存在しないプラットフォームのチップは出さない
+    const b = document.createElement('button');
+    b.className = `chip p-${p}` + (state.filter[p] ? ' on' : '');
+    b.textContent = `${label} ${n}`;
+    b.onclick = () => { state.filter[p] = !state.filter[p]; save(); renderList(); };
+    bar.appendChild(b);
+  });
+  tags.forEach(t => {
+    const b = document.createElement('button');
+    b.className = 'chip tag' + (state.filter.tags.includes(t) ? ' on' : '');
+    b.textContent = '🏷 ' + t;
+    b.onclick = () => {
+      const i = state.filter.tags.indexOf(t);
+      if (i >= 0) state.filter.tags.splice(i, 1); else state.filter.tags.push(t);
+      save(); renderList();
+    };
+    bar.appendChild(b);
+  });
+}
+
+// ---------- 複数選択 ----------
+function renderSelBar() {
+  selected.forEach(it => { if (!playlist.includes(it)) selected.delete(it); });
+  const bar = document.getElementById('sel-bar');
+  if (!selected.size) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  document.getElementById('sel-count').textContent = `${selected.size}件選択`;
+  const mv = document.getElementById('sel-move');
+  mv.innerHTML = '<option value="">📂 移動...</option>';
+  state.lists.forEach((l, i) => {
+    if (i === state.active) return;
+    const o = document.createElement('option');
+    o.value = i; o.textContent = l.name;
+    mv.appendChild(o);
+  });
+}
+function onItemClick(e, i) {
+  if (e.ctrlKey || e.metaKey) {
+    const it = playlist[i];
+    if (selected.has(it)) selected.delete(it); else selected.add(it);
+    anchorIndex = i;
+    renderList();
+  } else if (e.shiftKey) {
+    const vis = visibleIndices();
+    const a = anchorIndex >= 0 ? anchorIndex : (currentIndex >= 0 ? currentIndex : vis[0]);
+    const lo = Math.min(a, i), hi = Math.max(a, i);
+    selected.clear();
+    vis.forEach(v => { if (v >= lo && v <= hi) selected.add(playlist[v]); });
+    renderList();
+  } else {
+    if (selected.size) { selected.clear(); renderSelBar(); }
+    anchorIndex = i;
+    play(i);
+  }
+}
+function deleteSelected() {
+  if (!selected.size) return;
+  const curItem = playlist[currentIndex];
+  const kept = playlist.filter(it => !selected.has(it));
+  state.lists[state.active].items = kept;
+  playlist = kept;
+  currentIndex = curItem ? playlist.indexOf(curItem) : -1;
+  selected.clear(); anchorIndex = -1;
+  save(); renderListSelect(); renderList();
+}
+function moveSelected(t) {
+  const target = state.lists[t];
+  const seen = new Set(target.items.map(i => i.platform + i.id));
+  let moved = 0;
+  const total = selected.size;
+  selected.forEach(it => {
+    const k = it.platform + it.id;
+    if (!seen.has(k)) { seen.add(k); target.items.push(it); moved++; }
+  });
+  deleteSelected(); // 現リストから除去（save・再描画込み）
+  const status = document.getElementById('add-status');
+  status.style.color = 'var(--accent)';
+  status.textContent = `「${target.name}」へ${moved}件移動`
+    + (total > moved ? `（重複${total - moved}件は移動先と統合）` : '');
+}
+function tagSelected() {
+  if (!selected.size) return;
+  const first = [...selected][0];
+  const inp = prompt('タグをカンマ区切りで設定（空で解除）', (first.tags || []).join(', '));
+  if (inp === null) return;
+  const tags = inp.split(/[,、]/).map(s => s.trim()).filter(Boolean);
+  selected.forEach(it => { if (tags.length) it.tags = tags; else delete it.tags; });
+  save(); renderList();
+}
+document.getElementById('sel-del').onclick = deleteSelected;
+document.getElementById('sel-tag').onclick = tagSelected;
+document.getElementById('sel-clear').onclick = () => { selected.clear(); anchorIndex = -1; renderList(); };
+document.getElementById('sel-move').onchange = function () { if (this.value !== '') moveSelected(+this.value); };
+document.addEventListener('keydown', e => {
+  if (e.key === 'Delete' && selected.size && !/TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) deleteSelected();
+});
+
 // ---------- リスト描画 ----------
 const listEl = document.getElementById('playlist');
 function renderList() {
   listEl.innerHTML = '';
-  playlist.forEach((item, i) => {
+  visibleIndices().forEach(i => {
+    const item = playlist[i];
     const li = document.createElement('li');
-    li.className = item.platform + (i === currentIndex ? ' current' : '');
+    li.className = item.platform + (i === currentIndex ? ' current' : '') + (selected.has(item) ? ' selected' : '');
     li.draggable = true;
     li.dataset.index = i;
     const badge = { yt: 'YT', nico: 'ニコ', sc: 'SC' }[item.platform];
@@ -394,6 +542,7 @@ function renderList() {
       <img class="thumb" loading="lazy" onerror="this.style.display='none'">
       <span class="badge">${badge}</span>
       <span class="title"></span>
+      <span class="tags"></span>
       <button class="del" title="削除">✕</button>`;
     const tu = thumbUrl(item);
     const img = li.querySelector('.thumb');
@@ -401,8 +550,12 @@ function renderList() {
     const titleEl = li.querySelector('.title');
     titleEl.textContent = item.title;
     titleEl.title = item.title;
-    li.querySelector('.thumb').onclick = () => play(i);
-    titleEl.onclick = () => play(i);
+    if (item.tags && item.tags.length) {
+      const tg = li.querySelector('.tags');
+      tg.textContent = item.tags.map(t => '🏷' + t).join(' ');
+      tg.title = item.tags.join(', ');
+    }
+    li.onclick = (e) => { if (e.target.closest('.del')) return; onItemClick(e, i); };
     li.querySelector('.del').onclick = (e) => {
       e.stopPropagation();
       playlist.splice(i, 1);
@@ -429,6 +582,8 @@ function renderList() {
     });
     listEl.appendChild(li);
   });
+  renderFilterBar();
+  renderSelBar();
 }
 
 // ---------- 追加 ----------
@@ -540,7 +695,7 @@ function stopSc() {
 // SoundCloud: ウィジェットを使い回し、load()で曲だけ差し替える
 function scUrl(id) { return 'https://soundcloud.com/' + id; }
 function afterScLoad() {
-  scWidget.setVolume(state.volume);
+  scWidget.setVolume(effVolume());
   scWidget.getCurrentSound(snd => {
     const cur = playlist[currentIndex];
     if (!cur || cur.platform !== 'sc' || !snd) return;
@@ -592,7 +747,7 @@ function play(i) {
         videoId: item.id,
         playerVars: { autoplay: 1, rel: 0 },
         events: {
-          onReady: (e) => e.target.setVolume(state.volume),
+          onReady: (e) => e.target.setVolume(effVolume()),
           onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) next(); }
         }
       });
@@ -609,6 +764,8 @@ function play(i) {
     iframe.allowFullscreen = true;
     document.getElementById('player-box').appendChild(iframe);
   }
+  syncGainUi();
+  applyVolume(); // 曲別ゲインを反映（ニコニコはloadComplete時に再適用される）
   renderList();
 }
 function sendNicoPlay() {
@@ -651,41 +808,69 @@ window.addEventListener('message', (e) => {
   }
 });
 
-// ---------- 前後・シャッフル ----------
+// ---------- 前後・シャッフル（フィルター通過曲の中で回る） ----------
 function next() {
-  if (!playlist.length) return;
-  if (shuffle && playlist.length > 1) {
+  const vis = visibleIndices();
+  if (!vis.length) return;
+  if (shuffle && vis.length > 1) {
     let r;
-    do { r = Math.floor(Math.random() * playlist.length); } while (r === currentIndex);
+    do { r = vis[Math.floor(Math.random() * vis.length)]; } while (r === currentIndex);
     play(r);
   } else {
-    play((currentIndex + 1) % playlist.length);
+    const pos = vis.indexOf(currentIndex); // フィルターで現在曲が非表示なら-1 → 先頭へ
+    play(vis[(pos + 1) % vis.length]);
   }
 }
 document.getElementById('next-btn').onclick = next;
 document.getElementById('prev-btn').onclick = () => {
-  if (!playlist.length) return;
-  play((currentIndex - 1 + playlist.length) % playlist.length);
+  const vis = visibleIndices();
+  if (!vis.length) return;
+  const pos = vis.indexOf(currentIndex);
+  play(vis[pos <= 0 ? vis.length - 1 : pos - 1]);
 };
 document.getElementById('shuffle-btn').onclick = function () {
   shuffle = !shuffle;
   this.classList.toggle('active', shuffle);
 };
 
-// ---------- マスターボリューム ----------
+// ---------- マスターボリューム＋曲別補正 ----------
+// 実効音量 = マスター × 曲別ゲイン(%)。埋め込みプレイヤーは音声データに触れないため
+// 自動ラウドネス正規化は不可能で、曲ごとの手動補正を記憶する方式をとる
+function effVolume() {
+  const it = playlist[currentIndex];
+  const g = it && typeof it.gain === 'number' ? it.gain : 100;
+  return Math.max(0, Math.min(100, Math.round(state.volume * g / 100)));
+}
 function applyVolume() {
-  const v = state.volume;
+  const v = effVolume();
   if (ytPlayer && ytPlayer.setVolume) { try { ytPlayer.setVolume(v); } catch (e) {} }
   const nicoFrame = document.querySelector('#player-box iframe[src*="embed.nicovideo.jp"]');
   if (nicoFrame) nicoFrame.contentWindow.postMessage(
     { sourceConnectorType: 1, playerId: '1', eventName: 'volumeChange', data: { volume: v / 100 } },
     'https://embed.nicovideo.jp');
   if (scWidget) { try { scWidget.setVolume(v); } catch (e) {} }
-  document.getElementById('volume-label').textContent = v;
+  document.getElementById('volume-label').textContent = state.volume;
 }
 const volSlider = document.getElementById('volume-slider');
 volSlider.value = state.volume;
 volSlider.oninput = () => { state.volume = +volSlider.value; save(); applyVolume(); };
+const gainSlider = document.getElementById('gain-slider');
+function syncGainUi() {
+  const it = playlist[currentIndex];
+  const wrap = document.getElementById('gain-wrap');
+  if (!it) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const g = typeof it.gain === 'number' ? it.gain : 100;
+  gainSlider.value = g;
+  document.getElementById('gain-label').textContent = g + '%';
+}
+gainSlider.oninput = () => {
+  const it = playlist[currentIndex];
+  if (!it) return;
+  it.gain = +gainSlider.value;
+  document.getElementById('gain-label').textContent = it.gain + '%';
+  save(); applyVolume();
+};
 applyVolume();
 
 renderListSelect();
