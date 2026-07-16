@@ -110,7 +110,7 @@
     </div>
     <ul id="playlist"></ul>
     <div class="hint">
-      クリックで再生 / Ctrl・Shift＋クリックで複数選択（🏷タグ・📂移動・🗑一括削除） / ドラッグで並び替え / ✕・Deleteキーで削除。<br>
+      クリックで再生 / Ctrl・Shift＋クリックで複数選択（🏷タグ・📂移動・🗑一括削除・ドラッグで一括並び替え） / ドラッグで並び替え / ✕・Deleteキーで削除。<br>
       再生中は🎚で曲ごとの音量補正（記憶される）。チップでプラットフォーム/タグ絞り込み＝その範囲で連続再生。<br>
       プレイリストはこのブラウザに自動保存（localStorage）。<br>
       一括取り込み: YouTubeはチャンネル/再生リストURL（要APIキー・下記）、<br>
@@ -572,12 +572,21 @@ function renderList() {
       const from = +e.dataTransfer.getData('text/plain');
       const to = i;
       if (from === to) return;
-      const [moved] = playlist.splice(from, 1);
-      playlist.splice(to, 0, moved);
-      // currentIndex追従
-      if (currentIndex === from) currentIndex = to;
-      else if (from < currentIndex && to >= currentIndex) currentIndex--;
-      else if (from > currentIndex && to <= currentIndex) currentIndex++;
+      const dragged = playlist[from];
+      const targetItem = playlist[to];
+      // 選択中の曲を掴んだ場合は選択全体をブロックとして一括移動（リスト内の相対順は維持）
+      const movingSet = (selected.has(dragged) && selected.size > 1)
+        ? selected : new Set([dragged]);
+      if (movingSet.has(targetItem)) return; // ドロップ先が移動対象自身
+      const curItem = playlist[currentIndex];
+      const moving = playlist.filter(it => movingSet.has(it));
+      const rest = playlist.filter(it => !movingSet.has(it));
+      let idx = rest.indexOf(targetItem);
+      if (from < to) idx++; // 下方向へのドラッグはターゲットの後ろへ（従来挙動を踏襲）
+      rest.splice(idx, 0, ...moving);
+      state.lists[state.active].items = rest;
+      playlist = rest;
+      currentIndex = curItem ? playlist.indexOf(curItem) : -1; // 再生中の曲を参照で追従
       save(); renderList();
     });
     listEl.appendChild(li);
