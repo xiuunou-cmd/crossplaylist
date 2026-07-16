@@ -85,14 +85,15 @@
       <button id="list-rename" title="名前を変更">✎</button>
       <button id="list-del" title="このプレイリストを削除">🗑</button>
     </div>
-    <textarea id="url-input" placeholder="動画/曲URL・YouTubeチャンネル/再生リストURL を貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...&#10;https://www.nicovideo.jp/watch/sm...&#10;https://soundcloud.com/artist/track"></textarea>
+    <textarea id="url-input" placeholder="動画/曲URL・チャンネル/マイリスト等のURL を貼り付け（複数行OK）&#10;https://www.youtube.com/watch?v=...（再生リスト/チャンネルURLもOK）&#10;https://www.nicovideo.jp/watch/sm...（マイリスト/シリーズ/ユーザーURLもOK）&#10;https://soundcloud.com/artist/track"></textarea>
     <button id="add-btn">＋ 追加</button>
     <div id="add-status" style="font-size:12px; margin-top:6px; min-height:1.3em;"></div>
     <ul id="playlist"></ul>
     <div class="hint">
       クリックで再生 / ドラッグで並び替え / ✕で削除。<br>
       プレイリストはこのブラウザに自動保存（localStorage）。<br>
-      YouTubeはチャンネルURL・再生リストURLをそのまま貼れば一括取り込み（要APIキー・下記）。
+      一括取り込み: YouTubeはチャンネル/再生リストURL（要APIキー・下記）、<br>
+      ニコニコはマイリスト/シリーズ/ユーザーページURLをそのまま貼るだけ（設定不要）。
     </div>
     <details class="hint" style="margin-top:8px;">
       <summary style="cursor:pointer; color:var(--accent);">⚙ YouTubeチャンネル/再生リスト取り込み（APIキー設定）</summary>
@@ -109,16 +110,16 @@
       <div id="yt-key-status" style="margin-top:4px;"></div>
     </details>
     <details class="hint" style="margin-top:8px;">
-      <summary style="cursor:pointer; color:var(--accent);">📥 ニコニコのマイリスト/チャンネルを取り込む（ブックマークレット）</summary>
+      <summary style="cursor:pointer; color:var(--accent);">📥 ニコニコの検索結果/ランキング等から取り込む（ブックマークレット）</summary>
+      <p style="margin:8px 0;">マイリスト／シリーズ／ユーザー投稿一覧は<b>URLを上の欄に貼るだけ</b>で取り込めます。
+      検索結果・ランキングなど「動画リンクが並ぶ任意のページ」から取り込みたいときだけ、こちらを使ってください。</p>
       <ol style="padding-left:18px; margin:8px 0;">
         <li>下のリンクをブックマークバーにドラッグして登録<br>
           <a id="bookmarklet" style="color:var(--nico); font-weight:bold;">📥 動画URL収集</a></li>
-        <li>ニコニコで取り込みたいページを開く（マイリスト／シリーズ／ユーザー投稿一覧など。<b>下までスクロールして全件表示させる</b>）</li>
+        <li>ニコニコで取り込みたいページを開く（<b>下までスクロールして全件表示させる</b>）</li>
         <li>登録したブックマークをクリック → 動画URLが全件コピーされる</li>
         <li>ここに戻って貼り付け →「＋追加」</li>
       </ol>
-      動画リンクが並ぶページ（マイリスト・シリーズ・投稿者ページ・検索結果・ランキング等）ならどこでも使える。<br>
-      ※ニコニコはAPIが外部アクセスを遮断しているため、URL直貼りの自動取り込みには対応できずこの方式になっています。
     </details>
     <script>
       document.getElementById('bookmarklet').href = 'javascript:' + encodeURIComponent(
@@ -192,11 +193,21 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 });
 
-// タイトル/サムネ取得（YouTube・SoundCloudはnoembedで取得。
-// ニコニコはAPIがCORS遮断のため、ブックマークレット由来 or 再生時のプレイヤー情報で補完）
+// タイトル/サムネ取得（YouTube・SoundCloudはnoembed、ニコニコはリレー経由のgetthumbinfoで取得）
 async function fetchTitle(item) {
-  if (item.platform === 'nico') return;
   if (item.title !== item.id && item.thumb) return;
+  if (item.platform === 'nico') {
+    try {
+      const r = await fetch(`${NICO_RELAY}/video/${item.id}`);
+      if (!r.ok) return; // 削除済み等 → IDのまま表示（再生時のプレイヤー情報で補完）
+      const v = (await r.json()).items[0];
+      let ch = false;
+      if (v.title && item.title === item.id) { item.title = v.title; ch = true; }
+      if (v.thumb && !item.thumb) { item.thumb = v.thumb; ch = true; }
+      if (ch) { save(); renderList(); }
+    } catch (e) { /* リレー不達 → IDのまま表示 */ }
+    return;
+  }
   const url = item.platform === 'yt'
     ? `https://www.youtube.com/watch?v=${item.id}`
     : `https://soundcloud.com/${item.id}`;
@@ -289,6 +300,55 @@ async function fetchPlaylistItems(playlistId, onProgress) {
     pageToken = j.nextPageToken || '';
   } while (pageToken && items.length < MAX);
   return { items, truncated: !!pageToken };
+}
+
+// ---------- ニコニコ一括取り込み（リレー経由） ----------
+// ニコニコAPIはCORS遮断のため、CORSヘッダを付けて中継するWorker（relay/worker.js）を経由する
+const NICO_RELAY = /^(localhost|127\.)/.test(location.hostname)
+  ? 'http://127.0.0.1:8787'
+  : 'https://crossplaylist-relay.xiuunou-cmd.workers.dev';
+
+// マイリスト/シリーズ/ユーザーページURLの判定（単一動画URLは対象外）
+function classifyNicoSpecial(line) {
+  const t = line.trim();
+  if (!t || /nicovideo\.jp\/watch\/|nico\.ms\//.test(t)) return null; // 単一動画優先
+  let m;
+  if ((m = t.match(/nicovideo\.jp\/(?:user\/\d+\/)?mylist\/(\d+)/))) return { type: 'mylist', id: m[1] };
+  if ((m = t.match(/nicovideo\.jp\/(?:user\/\d+\/)?series\/(\d+)/))) return { type: 'series', id: m[1] };
+  if ((m = t.match(/nicovideo\.jp\/user\/(\d+)\/?(?:video\/?)?(?:[?#]|$)/))) return { type: 'user', id: m[1] };
+  return null;
+}
+
+async function importNicoSpecial(spec) {
+  const status = document.getElementById('add-status');
+  status.style.color = 'var(--accent)';
+  const MAX = 500;
+  let label = { mylist: 'マイリスト', series: 'シリーズ', user: 'ユーザー投稿' }[spec.type];
+  status.textContent = `ニコニコの${label}を取得中...`;
+  const items = [];
+  let truncated = false;
+  try {
+    for (let page = 1, hasNext = true; hasNext; page++) {
+      const r = await fetch(`${NICO_RELAY}/${spec.type}/${spec.id}?page=${page}`);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const jp = { FORBIDDEN: '非公開のため取得できません', NOT_FOUND: '見つかりません（削除済みの可能性）' };
+        throw new Error(jp[j.error] || j.error || 'HTTP ' + r.status);
+      }
+      if (j.name) label = j.name;
+      for (const v of j.items) items.push({ platform: 'nico', id: v.id, title: v.title || v.id, thumb: v.thumb });
+      status.textContent = `「${label}」取得中... ${items.length}件`;
+      hasNext = !!j.hasNext;
+      if (hasNext && items.length >= MAX) { truncated = true; break; }
+    }
+    const addedItems = addItems(items);
+    status.textContent = `「${label}」から${addedItems.length}件追加`
+      + (addedItems.length < items.length ? `（重複${items.length - addedItems.length}件スキップ）` : '')
+      + (truncated ? `／上限${MAX}件で打ち切り` : '');
+  } catch (e) {
+    status.style.color = 'var(--nico)';
+    status.textContent = `ニコニコ取り込み失敗: ${e.message}`;
+  }
 }
 
 async function importYtSpecial(url) {
@@ -384,7 +444,9 @@ async function addFromInput() {
   for (const rawLine of input.value.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (classifyYtSpecial(line)) { specials.push(line); continue; }   // チャンネル/再生リスト → API取り込み
+    if (classifyYtSpecial(line)) { specials.push({ kind: 'yt', line }); continue; }   // チャンネル/再生リスト → API取り込み
+    const nico = classifyNicoSpecial(line);
+    if (nico) { specials.push({ kind: 'nico', spec: nico }); continue; }              // マイリスト/シリーズ/ユーザー → リレー取り込み
     if (/soundcloud\.com\/[\w-]+\/sets\//.test(line)) { scSets++; continue; } // SCのセットは未対応
     const matches = [...line.matchAll(rx)];
     const before = collected.length;
@@ -402,12 +464,12 @@ async function addFromInput() {
     }
   }
 
-  // 個別動画を追加（タイトル未取得のYouTube/SoundCloudは補完）
+  // 個別動画を追加（タイトル未取得のものは補完）
   const addedItems = addItems(collected);
-  addedItems.forEach(it => { if (it.platform !== 'nico' && it.title === it.id) fetchTitle(it); });
+  addedItems.forEach(it => { if (it.title === it.id) fetchTitle(it); });
 
-  // チャンネル/再生リストを順に取り込み（statusは各自で表示）
-  for (const url of specials) await importYtSpecial(url);
+  // チャンネル/再生リスト/マイリスト等を順に取り込み（statusは各自で表示）
+  for (const s of specials) await (s.kind === 'yt' ? importYtSpecial(s.line) : importNicoSpecial(s.spec));
 
   if (specials.length) { input.value = ''; return; }
   const setNote = scSets ? `（SoundCloudのセット${scSets}件は未対応・個別トラックURLを貼ってください）` : '';
